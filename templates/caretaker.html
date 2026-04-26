@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Caretaker — GuardianSense</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <style>
+    body{background:#0a0f1e;font-family:'Syne',sans-serif;}
+    .glass{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(12px);}
+    .grad-text{background:linear-gradient(135deg,#34d399,#38bdf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+    ::-webkit-scrollbar{width:4px;} ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:4px;}
+    @keyframes slideUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+    .slide-up{animation:slideUp 0.3s ease-out;}
+    .elder-card.selected{border-color:rgba(52,211,153,0.5);background:rgba(52,211,153,0.06);}
+  </style>
+</head>
+<body class="text-slate-100 min-h-screen">
+
+<!-- FALL ALERT MODAL -->
+<div id="fall-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+  <div class="glass border border-red-500/40 rounded-3xl p-8 max-w-sm w-full mx-4 text-center" style="box-shadow:0 0 60px rgba(239,68,68,0.25)">
+    <div class="text-6xl mb-4 animate-bounce">🚨</div>
+    <h2 class="text-2xl font-extrabold text-red-400 mb-2">Fall Detected!</h2>
+    <p id="modal-elder" class="text-slate-300 text-sm mb-1"></p>
+    <p id="modal-conf"  class="text-slate-400 text-xs font-mono mb-4"></p>
+    <p id="modal-loc"   class="text-slate-500 text-xs font-mono mb-6"></p>
+    <div class="flex gap-3">
+      <button id="modal-ack-btn" onclick="modalAck()" class="flex-1 bg-red-500 hover:bg-red-400 transition-colors text-white font-bold py-3 rounded-2xl text-sm">
+        ✓ Acknowledge
+      </button>
+      <a id="modal-map" href="#" target="_blank" class="flex-1 glass hover:bg-white/10 transition-colors text-sm font-mono py-3 rounded-2xl flex items-center justify-center">
+        📍 Map
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- NAV -->
+<nav class="glass border-b border-white/5 px-6 py-4 flex items-center justify-between sticky top-0 z-40">
+  <div class="flex items-center gap-3">
+    <span class="text-xl">🛡️</span>
+    <span class="font-bold text-lg">Guardian<span class="grad-text">Sense</span></span>
+    <span class="text-xs font-mono bg-sky-500/20 text-sky-400 border border-sky-500/30 px-2 py-0.5 rounded-full">Caretaker</span>
+  </div>
+  <div class="flex items-center gap-4">
+    <div id="notif-badge" class="hidden font-mono text-xs bg-red-500/20 text-red-400 border border-red-500/30 px-3 py-1.5 rounded-full">
+      🔔 <span id="notif-count">{{ notifications|length }}</span> unread
+    </div>
+    <span class="text-sm text-slate-400">{{ current_user.name }}</span>
+    <a href="/logout" class="text-xs font-mono glass px-3 py-1.5 rounded-xl hover:bg-white/10 transition-colors">Logout</a>
+  </div>
+</nav>
+
+<main class="max-w-7xl mx-auto px-4 py-8">
+  <div class="grid md:grid-cols-4 gap-6">
+
+    <!-- ELDER SELECTOR SIDEBAR -->
+    <div class="md:col-span-1 space-y-3">
+      <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-3">My Elders</p>
+      {% for elder in elders %}
+      <div class="elder-card glass rounded-2xl p-4 cursor-pointer hover:bg-white/[0.06] transition-all border border-white/8"
+           id="elder-card-{{ elder.id }}"
+           onclick="selectElder({{ elder.id }}, '{{ elder.name }}')">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-full bg-emerald-500/20 flex items-center justify-center text-lg">👴</div>
+          <div>
+            <p class="text-sm font-bold text-slate-200">{{ elder.name }}</p>
+            <p class="text-xs font-mono text-slate-500">{{ elder.device_id or 'No device' }}</p>
+          </div>
+        </div>
+        <!-- Live status dot -->
+        <div class="flex items-center gap-2 mt-3">
+          <div class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" id="dot-{{ elder.id }}"></div>
+          <span class="text-xs font-mono text-slate-500" id="status-{{ elder.id }}">Live</span>
+        </div>
+      </div>
+      {% endfor %}
+      {% if not elders %}
+      <p class="text-xs font-mono text-slate-600 text-center py-8">No elders assigned</p>
+      {% endif %}
+    </div>
+
+    <!-- MAIN PANEL -->
+    <div class="md:col-span-3 space-y-5">
+
+      <!-- Placeholder -->
+      <div id="select-prompt" class="glass rounded-2xl p-12 text-center">
+        <p class="text-4xl mb-3">👆</p>
+        <p class="text-slate-400 font-mono text-sm">Select an elder from the sidebar to view live data</p>
+      </div>
+
+      <!-- Elder live panel (hidden until selected) -->
+      <div id="elder-panel" class="hidden space-y-5">
+
+        <!-- KPI row -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div class="glass rounded-2xl p-4">
+            <p class="text-xs font-mono text-slate-500 mb-1">Battery</p>
+            <p id="c-battery" class="text-2xl font-extrabold text-emerald-400">—%</p>
+          </div>
+          <div class="glass rounded-2xl p-4">
+            <p class="text-xs font-mono text-slate-500 mb-1">GPS</p>
+            <p id="c-gps" class="text-2xl font-extrabold text-slate-400">—</p>
+          </div>
+          <div class="glass rounded-2xl p-4">
+            <p class="text-xs font-mono text-slate-500 mb-1">Accel Mag</p>
+            <p id="c-mag" class="text-2xl font-extrabold text-sky-400">—</p>
+          </div>
+          <div class="glass rounded-2xl p-4">
+            <p class="text-xs font-mono text-slate-500 mb-1">Falls Today</p>
+            <p id="c-falls" class="text-2xl font-extrabold text-red-400">{{ recent_falls|length }}</p>
+          </div>
+        </div>
+
+        <!-- Live sensor values -->
+        <div class="glass rounded-2xl p-5">
+          <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-4">Live Sensor Readings</p>
+          <div class="grid grid-cols-3 md:grid-cols-6 gap-3">
+            {% for axis, color in [('ax','emerald'),('ay','emerald'),('az','emerald'),('gx','amber'),('gy','amber'),('gz','amber')] %}
+            <div class="glass rounded-xl p-3 text-center">
+              <p class="text-[10px] font-mono text-slate-500 uppercase">{{ axis }}</p>
+              <p id="c-{{ axis }}" class="font-mono text-{{ color }}-400 text-sm font-bold mt-1">0.00</p>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+
+        <!-- Chart -->
+        <div class="glass rounded-2xl p-5">
+          <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-4">Acceleration (live)</p>
+          <canvas id="accel-chart" height="140"></canvas>
+        </div>
+
+        <!-- Location -->
+        <div class="glass rounded-2xl p-5">
+          <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-3">Last Known Location</p>
+          <div class="flex items-center gap-4">
+            <div class="text-3xl">📍</div>
+            <div>
+              <p id="c-coords" class="font-mono text-sm text-slate-300">—</p>
+              <a id="c-map-link" href="#" target="_blank" class="text-xs font-mono text-sky-400 hover:underline mt-1 block hidden">Open in Google Maps →</a>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Fall history -->
+      <div class="glass rounded-2xl p-5">
+        <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-4">Recent Fall Events</p>
+        <div class="space-y-3" id="fall-feed">
+          {% for fall in recent_falls %}
+          <div class="glass border border-red-500/20 rounded-xl p-4 flex items-center justify-between" id="fall-row-{{ fall.id }}">
+            <div>
+              <p class="text-sm font-bold text-red-400">🚨 {{ fall.elder.name if fall.elder else 'Unknown' }}</p>
+              <p class="text-xs font-mono text-slate-400 mt-0.5">{{ fall.timestamp.strftime('%b %d, %H:%M:%S') }} · {{ fall.confidence }}% confidence</p>
+            </div>
+            {% if not fall.acknowledged %}
+            <button onclick="ackFall({{ fall.id }})" class="text-xs font-mono text-emerald-400 border border-emerald-500/30 px-3 py-1.5 rounded-xl hover:bg-emerald-500/10 transition-colors">
+              Acknowledge
+            </button>
+            {% else %}
+            <span class="text-xs font-mono text-slate-500">✓ Done</span>
+            {% endif %}
+          </div>
+          {% endfor %}
+          {% if not recent_falls %}
+          <p class="text-xs font-mono text-slate-600 text-center py-6">No fall events recorded</p>
+          {% endif %}
+        </div>
+      </div>
+
+    </div>
+  </div>
+</main>
+
+<script>
+const socket = io();
+let selectedElderId = null;
+let currentFallId   = null;
+
+// Pass elder IDs from Jinja into JS cleanly as a JSON array
+const ELDER_IDS = {{ elders | map(attribute='id') | list | tojson }};
+
+// Chart setup
+const ctx = document.getElementById('accel-chart').getContext('2d');
+const axData = Array(60).fill(0);
+const ayData = Array(60).fill(0);
+const azData = Array(60).fill(0);
+const labels = Array(60).fill('');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels,
+    datasets: [
+      { label: 'aX', data: axData, borderColor: '#34d399', borderWidth: 1.5, pointRadius: 0, tension: 0.4 },
+      { label: 'aY', data: ayData, borderColor: '#fbbf24', borderWidth: 1.5, pointRadius: 0, tension: 0.4 },
+      { label: 'aZ', data: azData, borderColor: '#f87171', borderWidth: 1.5, pointRadius: 0, tension: 0.4 },
+    ]
+  },
+  options: {
+    responsive: true,
+    animation: false,
+    plugins: { legend: { labels: { color: '#94a3b8', font: { family: 'DM Mono', size: 11 } } } },
+    scales: {
+      x: { display: false },
+      y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#475569', font: { family: 'DM Mono', size: 10 } } }
+    }
+  }
+});
+
+// Select elder from sidebar
+function selectElder(id, name) {
+  selectedElderId = id;
+  document.getElementById('select-prompt').classList.add('hidden');
+  document.getElementById('elder-panel').classList.remove('hidden');
+
+  document.querySelectorAll('.elder-card').forEach(c => c.classList.remove('selected'));
+  const card = document.getElementById('elder-card-' + id);
+  if (card) card.classList.add('selected');
+
+  socket.emit('subscribe_elder', { elder_id: id });
+
+  fetch('/api/caretaker/elder/' + id + '/sensor')
+    .then(r => r.json())
+    .then(logs => {
+      logs.slice(-60).forEach(l => {
+        axData.push(+l.ax); axData.shift();
+        ayData.push(+l.ay); ayData.shift();
+        azData.push(+l.az); azData.shift();
+        labels.push('');    labels.shift();
+      });
+      chart.update('none');
+    });
+}
+
+// Listen to live sensor events for ALL elders dynamically
+function handleSensorUpdate(d) {
+  if (selectedElderId === null || selectedElderId !== d.elder_id) return;
+
+  document.getElementById('c-ax').textContent      = (+d.ax).toFixed(2);
+  document.getElementById('c-ay').textContent      = (+d.ay).toFixed(2);
+  document.getElementById('c-az').textContent      = (+d.az).toFixed(2);
+  document.getElementById('c-gx').textContent      = (+d.gx).toFixed(2);
+  document.getElementById('c-gy').textContent      = (+d.gy).toFixed(2);
+  document.getElementById('c-gz').textContent      = (+d.gz).toFixed(2);
+  document.getElementById('c-battery').textContent = d.battery + '%';
+  document.getElementById('c-gps').textContent     = d.gps_fixed ? '🛰️ Fix' : 'Searching';
+  document.getElementById('c-mag').textContent     = (+d.accel_mag).toFixed(2);
+
+  if (d.lat && d.lng) {
+    document.getElementById('c-coords').textContent = (+d.lat).toFixed(5) + ', ' + (+d.lng).toFixed(5);
+    const ml = document.getElementById('c-map-link');
+    ml.href = 'https://maps.google.com/?q=' + d.lat + ',' + d.lng;
+    ml.classList.remove('hidden');
+  }
+
+  axData.push(+d.ax); axData.shift();
+  ayData.push(+d.ay); ayData.shift();
+  azData.push(+d.az); azData.shift();
+  labels.push('');    labels.shift();
+  chart.update('none');
+}
+
+// Register one socket listener per elder ID (no Jinja in JS loops)
+ELDER_IDS.forEach(function(elderId) {
+  socket.on('sensor_' + elderId, function(d) {
+    d.elder_id = elderId;   // tag the event so handleSensorUpdate can filter
+    handleSensorUpdate(d);
+  });
+});
+
+// Fall alert modal
+socket.on('fall_alert', function(e) {
+  currentFallId = e.id;
+  document.getElementById('modal-elder').textContent = 'Elder: ' + e.elder_name;
+  document.getElementById('modal-conf').textContent  = 'Confidence: ' + e.confidence + '% · ' + new Date(e.timestamp).toLocaleTimeString();
+  document.getElementById('modal-loc').textContent   = e.lat ? 'GPS: ' + (+e.lat).toFixed(5) + ', ' + (+e.lng).toFixed(5) : '';
+  if (e.lat) document.getElementById('modal-map').href = 'https://maps.google.com/?q=' + e.lat + ',' + e.lng;
+  document.getElementById('fall-modal').classList.remove('hidden');
+
+  const feed = document.getElementById('fall-feed');
+  const card = document.createElement('div');
+  card.id = 'fall-row-' + e.id;
+  card.className = 'glass border border-red-500/20 rounded-xl p-4 flex items-center justify-between slide-up';
+  card.innerHTML =
+    '<div>' +
+      '<p class="text-sm font-bold text-red-400">🚨 ' + e.elder_name + '</p>' +
+      '<p class="text-xs font-mono text-slate-400 mt-0.5">' + new Date(e.timestamp).toLocaleString() + ' · ' + e.confidence + '% confidence</p>' +
+    '</div>' +
+    '<button onclick="ackFall(' + e.id + ')" class="text-xs font-mono text-emerald-400 border border-emerald-500/30 px-3 py-1.5 rounded-xl hover:bg-emerald-500/10 transition-colors">Acknowledge</button>';
+  feed.prepend(card);
+});
+
+function modalAck() {
+  if (currentFallId) ackFall(currentFallId);
+  document.getElementById('fall-modal').classList.add('hidden');
+}
+
+async function ackFall(id) {
+  await fetch('/api/caretaker/falls/' + id + '/acknowledge', { method: 'POST' });
+  const row = document.getElementById('fall-row-' + id);
+  if (row) {
+    const btn = row.querySelector('button');
+    if (btn) {
+      const span = document.createElement('span');
+      span.className   = 'text-xs font-mono text-slate-500';
+      span.textContent = '✓ Done';
+      btn.replaceWith(span);
+    }
+  }
+}
+
+// Show notification badge if there are unread notifications on load
+const unreadCount = parseInt(document.getElementById('notif-badge').querySelector('#notif-count').textContent || '0');
+if (unreadCount > 0) {
+  document.getElementById('notif-badge').classList.remove('hidden');
+}
+</script>
+</body>
+</html>

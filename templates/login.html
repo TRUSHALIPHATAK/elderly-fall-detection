@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>GuardianSense — Login</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <style>
+    body { background: #0a0f1e; font-family: 'Syne', sans-serif; }
+    .glass { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(16px); }
+    .grad-text { background: linear-gradient(135deg,#34d399,#38bdf8); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .glow { box-shadow: 0 0 40px rgba(52,211,153,0.15); }
+    input:-webkit-autofill { -webkit-box-shadow: 0 0 0 30px #1e293b inset !important; -webkit-text-fill-color: #e2e8f0 !important; }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center px-4">
+  <div style="background:radial-gradient(ellipse 80% 60% at 50% 0%,rgba(52,211,153,0.10) 0%,transparent 70%)" class="fixed inset-0 pointer-events-none"></div>
+
+  <div class="w-full max-w-md relative">
+    <div class="text-center mb-8">
+      <div class="text-5xl mb-4">🛡️</div>
+      <h1 class="text-3xl font-extrabold text-white">Guardian<span class="grad-text">Sense</span></h1>
+      <p class="text-slate-500 text-sm font-mono mt-2">Elderly Fall Detection Platform</p>
+    </div>
+
+    <div class="glass rounded-3xl p-8 glow">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for cat, msg in messages %}
+          <div class="mb-4 px-4 py-3 rounded-xl text-sm font-mono
+            {% if cat == 'danger' %}bg-red-500/10 text-red-400 border border-red-500/20
+            {% else %}bg-green-500/10 text-green-400 border border-green-500/20{% endif %}">
+            {{ msg }}
+          </div>
+        {% endfor %}
+      {% endwith %}
+
+      <form method="POST" action="/login" class="space-y-5">
+        <div>
+          <label class="block text-xs font-mono text-slate-400 mb-2 uppercase tracking-widest">Email</label>
+          <input type="email" name="email" required
+            class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-slate-100 text-sm focus:outline-none focus:border-emerald-500/50 focus:bg-white/8 transition-all placeholder-slate-600"
+            placeholder="you@example.com"/>
+        </div>
+        <div>
+          <label class="block text-xs font-mono text-slate-400 mb-2 uppercase tracking-widest">Password</label>
+          <input type="password" name="password" required
+            class="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-slate-100 text-sm focus:outline-none focus:border-emerald-500/50 transition-all placeholder-slate-600"
+            placeholder="••••••••"/>
+        </div>
+        <button type="submit"
+          class="w-full bg-emerald-500 hover:bg-emerald-400 active:scale-95 transition-all text-slate-950 font-bold py-3.5 rounded-xl text-sm mt-2">
+          Sign In →
+        </button>
+      </form>
+
+      <div class="mt-6 pt-6 border-t border-white/5">
+        <p class="text-xs text-center font-mono text-slate-600 mb-3">Demo credentials</p>
+        <div class="grid grid-cols-3 gap-2 text-xs font-mono">
+          <div class="glass rounded-xl p-3 text-center cursor-pointer hover:bg-white/10 transition-colors demo-card" data-email="admin@gs.com" data-pass="admin123">
+            <div class="text-lg mb-1">⚙️</div>
+            <div class="text-slate-400">Admin</div>
+            <div class="text-slate-600 text-[10px]">admin123</div>
+          </div>
+          <div class="glass rounded-xl p-3 text-center cursor-pointer hover:bg-white/10 transition-colors demo-card" data-email="rita@gs.com" data-pass="care123">
+            <div class="text-lg mb-1">👩‍⚕️</div>
+            <div class="text-slate-400">Caretaker</div>
+            <div class="text-slate-600 text-[10px]">care123</div>
+          </div>
+          <div class="glass rounded-xl p-3 text-center cursor-pointer hover:bg-white/10 transition-colors demo-card" data-email="sharma@gs.com" data-pass="elder123">
+            <div class="text-lg mb-1">👴</div>
+            <div class="text-slate-400">Elder</div>
+            <div class="text-slate-600 text-[10px]">elder123</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.querySelectorAll('.demo-card').forEach(card => {
+      card.addEventListener('click', () => {
+        document.querySelector('input[name=email]').value = card.dataset.email;
+        document.querySelector('input[name=password]').value = card.dataset.pass;
+      });
+    });
+  </script>
+</body>
+</html>

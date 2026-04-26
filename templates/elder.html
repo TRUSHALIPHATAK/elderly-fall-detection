@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Elder — GuardianSense</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <style>
+    body{background:#0a0f1e;font-family:'Syne',sans-serif;}
+    .glass{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(12px);}
+    .grad-text{background:linear-gradient(135deg,#34d399,#38bdf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+    ::-webkit-scrollbar{width:4px;} ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:4px;}
+    @keyframes slideUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+    .slide-up{animation:slideUp 0.3s ease-out;}
+    @keyframes pulse-red{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4)}50%{box-shadow:0 0 0 12px rgba(239,68,68,0)}}
+    .pulse-red{animation:pulse-red 1.5s infinite;}
+  </style>
+</head>
+<body class="text-slate-100 min-h-screen">
+
+<!-- FALL DETECTED BANNER -->
+<div id="fall-banner" class="hidden fixed top-0 inset-x-0 z-50 bg-red-600/90 backdrop-blur-sm px-6 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <span class="text-xl animate-bounce">🚨</span>
+    <span class="font-bold text-sm">Fall detected! Your caretaker has been alerted.</span>
+    <span id="banner-conf" class="font-mono text-xs bg-white/20 px-2 py-0.5 rounded-full"></span>
+  </div>
+  <button onclick="document.getElementById('fall-banner').classList.add('hidden')"
+          class="text-xs font-mono bg-white/20 hover:bg-white/30 px-3 py-1 rounded-xl transition-colors">
+    Dismiss
+  </button>
+</div>
+
+<!-- NAV -->
+<nav class="glass border-b border-white/5 px-6 py-4 flex items-center justify-between sticky top-0 z-40">
+  <div class="flex items-center gap-3">
+    <span class="text-xl">🛡️</span>
+    <span class="font-bold text-lg">Guardian<span class="grad-text">Sense</span></span>
+    <span class="text-xs font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full">Elder</span>
+  </div>
+  <div class="flex items-center gap-4">
+    <div id="notif-badge" class="{% if notifications %}{% endif %} font-mono text-xs bg-red-500/20 text-red-400 border border-red-500/30 px-3 py-1.5 rounded-full {% if not notifications %}hidden{% endif %}">
+      🔔 <span id="notif-count">{{ notifications|length }}</span> unread
+    </div>
+    <span class="text-sm text-slate-400">{{ current_user.name }}</span>
+    <a href="/logout" class="text-xs font-mono glass px-3 py-1.5 rounded-xl hover:bg-white/10 transition-colors">Logout</a>
+  </div>
+</nav>
+
+<main class="max-w-5xl mx-auto px-4 py-8 space-y-6">
+
+  <!-- Greeting -->
+  <div class="glass rounded-2xl p-6 flex items-center gap-5">
+    <div class="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center text-4xl">👴</div>
+    <div>
+      <h1 class="text-2xl font-extrabold">Hello, <span class="grad-text">{{ current_user.name }}</span></h1>
+      <p class="text-xs font-mono text-slate-500 mt-1">Device: {{ current_user.device_id or 'Not assigned' }}</p>
+    </div>
+    <!-- Live status -->
+    <div class="ml-auto flex items-center gap-2">
+      <div class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></div>
+      <span class="text-xs font-mono text-slate-400">Live monitoring</span>
+    </div>
+  </div>
+
+  <!-- KPI row -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="glass rounded-2xl p-4">
+      <p class="text-xs font-mono text-slate-500 mb-1">Battery</p>
+      <p id="e-battery" class="text-2xl font-extrabold text-emerald-400">—%</p>
+    </div>
+    <div class="glass rounded-2xl p-4">
+      <p class="text-xs font-mono text-slate-500 mb-1">GPS</p>
+      <p id="e-gps" class="text-2xl font-extrabold text-slate-400">—</p>
+    </div>
+    <div class="glass rounded-2xl p-4">
+      <p class="text-xs font-mono text-slate-500 mb-1">Accel Mag</p>
+      <p id="e-mag" class="text-2xl font-extrabold text-sky-400">—</p>
+    </div>
+    <div class="glass rounded-2xl p-4">
+      <p class="text-xs font-mono text-slate-500 mb-1">Falls Total</p>
+      <p class="text-2xl font-extrabold text-red-400">{{ my_falls|length }}</p>
+    </div>
+  </div>
+
+  <!-- Live sensor values -->
+  <div class="glass rounded-2xl p-5">
+    <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-4">Live Sensor Readings</p>
+    <div class="grid grid-cols-3 md:grid-cols-6 gap-3">
+      {% for axis, color in [('ax','emerald'),('ay','emerald'),('az','emerald'),('gx','amber'),('gy','amber'),('gz','amber')] %}
+      <div class="glass rounded-xl p-3 text-center">
+        <p class="text-[10px] font-mono text-slate-500 uppercase">{{ axis }}</p>
+        <p id="e-{{ axis }}" class="font-mono text-{{ color }}-400 text-sm font-bold mt-1">0.00</p>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Accel chart -->
+  <div class="glass rounded-2xl p-5">
+    <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-4">Acceleration (live)</p>
+    <canvas id="accel-chart" height="130"></canvas>
+  </div>
+
+  <!-- Location -->
+  <div class="glass rounded-2xl p-5">
+    <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-3">My Last Known Location</p>
+    <div class="flex items-center gap-4">
+      <div class="text-3xl">📍</div>
+      <div>
+        <p id="e-coords" class="font-mono text-sm text-slate-300">Waiting for GPS fix…</p>
+        <a id="e-map-link" href="#" target="_blank"
+           class="text-xs font-mono text-sky-400 hover:underline mt-1 block hidden">
+          Open in Google Maps →
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notifications -->
+  <div class="glass rounded-2xl p-5">
+    <div class="flex items-center justify-between mb-4">
+      <p class="text-xs font-mono text-slate-500 uppercase tracking-widest">Notifications</p>
+      {% if notifications %}
+      <button onclick="markRead()"
+              class="text-xs font-mono text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-xl hover:bg-emerald-500/10 transition-colors">
+        Mark all read
+      </button>
+      {% endif %}
+    </div>
+    <div class="space-y-3" id="notif-feed">
+      {% for n in notifications %}
+      <div class="glass rounded-xl p-4 border
+        {% if n.type == 'danger' %}border-red-500/30
+        {% elif n.type == 'warning' %}border-amber-500/30
+        {% else %}border-white/8{% endif %}">
+        <p class="text-sm text-slate-200">{{ n.message }}</p>
+        <p class="text-xs font-mono text-slate-500 mt-1">{{ n.created_at.strftime('%b %d, %H:%M:%S') }}</p>
+      </div>
+      {% endfor %}
+      {% if not notifications %}
+      <p class="text-xs font-mono text-slate-600 text-center py-6">No notifications</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- My fall history -->
+  <div class="glass rounded-2xl p-5">
+    <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-4">My Fall History</p>
+    <div class="space-y-3">
+      {% for fall in my_falls %}
+      <div class="glass border border-red-500/20 rounded-xl p-4 flex items-center justify-between">
+        <div>
+          <p class="text-sm font-bold text-red-400">🚨 Fall Detected</p>
+          <p class="text-xs font-mono text-slate-400 mt-0.5">
+            {{ fall.timestamp.strftime('%b %d %Y, %H:%M:%S') }} · {{ fall.confidence }}% confidence
+          </p>
+          {% if fall.lat %}
+          <p class="text-xs font-mono text-slate-500 mt-0.5">
+            GPS: {{ "%.5f"|format(fall.lat) }}, {{ "%.5f"|format(fall.lng) }}
+          </p>
+          {% endif %}
+        </div>
+        <span class="text-xs font-mono {% if fall.acknowledged %}text-slate-500{% else %}text-amber-400{% endif %}">
+          {% if fall.acknowledged %}✓ Acknowledged{% else %}⏳ Pending{% endif %}
+        </span>
+      </div>
+      {% endfor %}
+      {% if not my_falls %}
+      <p class="text-xs font-mono text-slate-600 text-center py-6">No fall events recorded — stay safe! 💚</p>
+      {% endif %}
+    </div>
+  </div>
+
+</main>
+
+<script>
+const socket  = io();
+const ELDER_ID = {{ current_user.id }};
+
+// Chart
+const ctx = document.getElementById('accel-chart').getContext('2d');
+const axData = Array(60).fill(0);
+const ayData = Array(60).fill(0);
+const azData = Array(60).fill(0);
+const labels = Array(60).fill('');
+const chart  = new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels,
+    datasets: [
+      { label:'aX', data:axData, borderColor:'#34d399', borderWidth:1.5, pointRadius:0, tension:0.4 },
+      { label:'aY', data:ayData, borderColor:'#fbbf24', borderWidth:1.5, pointRadius:0, tension:0.4 },
+      { label:'aZ', data:azData, borderColor:'#f87171', borderWidth:1.5, pointRadius:0, tension:0.4 },
+    ]
+  },
+  options:{
+    responsive:true, animation:false,
+    plugins:{ legend:{ labels:{ color:'#94a3b8', font:{ family:'DM Mono', size:11 } } } },
+    scales:{
+      x:{ display:false },
+      y:{ grid:{ color:'rgba(255,255,255,0.04)' }, ticks:{ color:'#475569', font:{ family:'DM Mono', size:10 } } }
+    }
+  }
+});
+
+// Live sensor feed for this elder
+socket.on('sensor_' + ELDER_ID, function(d) {
+  document.getElementById('e-ax').textContent      = (+d.ax).toFixed(2);
+  document.getElementById('e-ay').textContent      = (+d.ay).toFixed(2);
+  document.getElementById('e-az').textContent      = (+d.az).toFixed(2);
+  document.getElementById('e-gx').textContent      = (+d.gx).toFixed(2);
+  document.getElementById('e-gy').textContent      = (+d.gy).toFixed(2);
+  document.getElementById('e-gz').textContent      = (+d.gz).toFixed(2);
+  document.getElementById('e-battery').textContent = d.battery + '%';
+  document.getElementById('e-gps').textContent     = d.gps_fixed ? '🛰️ Fix' : 'Searching';
+  document.getElementById('e-mag').textContent     = (+d.accel_mag).toFixed(2);
+
+  if (d.lat && d.lng) {
+    document.getElementById('e-coords').textContent = (+d.lat).toFixed(5) + ', ' + (+d.lng).toFixed(5);
+    const ml = document.getElementById('e-map-link');
+    ml.href = 'https://maps.google.com/?q=' + d.lat + ',' + d.lng;
+    ml.classList.remove('hidden');
+  }
+
+  axData.push(+d.ax); axData.shift();
+  ayData.push(+d.ay); ayData.shift();
+  azData.push(+d.az); azData.shift();
+  labels.push('');    labels.shift();
+  chart.update('none');
+});
+
+// Fall alert — show banner
+socket.on('fall_alert', function(e) {
+  if (e.elder_id !== ELDER_ID) return;
+  const banner = document.getElementById('fall-banner');
+  document.getElementById('banner-conf').textContent = e.confidence + '% confidence';
+  banner.classList.remove('hidden');
+
+  // Also push into notification feed live
+  const feed = document.getElementById('notif-feed');
+  const card  = document.createElement('div');
+  card.className = 'glass rounded-xl p-4 border border-red-500/30 slide-up';
+  card.innerHTML =
+    '<p class="text-sm text-slate-200">⚠️ Fall event detected. Your caretaker has been alerted.</p>' +
+    '<p class="text-xs font-mono text-slate-500 mt-1">' + new Date(e.timestamp).toLocaleString() + '</p>';
+  feed.prepend(card);
+
+  // Update badge count
+  const badge = document.getElementById('notif-badge');
+  const countEl = document.getElementById('notif-count');
+  badge.classList.remove('hidden');
+  countEl.textContent = parseInt(countEl.textContent || '0') + 1;
+});
+
+// Mark all notifications read
+async function markRead() {
+  await fetch('/api/elder/notifications/read', { method: 'POST' });
+  document.getElementById('notif-badge').classList.add('hidden');
+  document.getElementById('notif-count').textContent = '0';
+}
+
+socket.on('connect', function() {
+  socket.emit('subscribe_elder', { elder_id: ELDER_ID });
+});
+</script>
+</body>
+</html>
