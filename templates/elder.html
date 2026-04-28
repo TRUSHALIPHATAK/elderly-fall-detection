@@ -178,7 +178,7 @@
 
 <script>
 const socket  = io();
-const ELDER_ID = {{ current_user.id }};
+const ELDER_ID = parseInt("{{ current_user.id }}");
 
 // Chart
 const ctx = document.getElementById('accel-chart').getContext('2d');

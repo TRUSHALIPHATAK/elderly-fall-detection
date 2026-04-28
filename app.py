@@ -88,6 +88,27 @@ def home():
         return redirect(url_for(f"{current_user.role}_dashboard"))
     return render_template('login.html')
 
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        data = request.form
+        if User.query.filter_by(email=data['email']).first():
+            flash('Email already registered', 'danger')
+            return redirect(url_for('register'))
+        hashed = bcrypt.generate_password_hash(data['password']).decode('utf-8')
+        new_user = User(
+            name=data['name'],
+            email=data['email'],
+            password=hashed,
+            role=data['role'],
+            device_id=data.get('device_id') if data['role'] == 'elder' else None
+        )
+        db.session.add(new_user)
+        db.session.commit()
+        flash('Account created! Please log in.', 'success')
+        return redirect(url_for('login'))
+    caretakers = User.query.filter_by(role='caretaker').all()
+    return render_template('register.html', caretakers=caretakers)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -224,6 +245,18 @@ def admin_stats():
         'pending_falls':    FallEvent.query.filter_by(acknowledged=False).count(),
         'total_logs':       SensorLog.query.count(),
     })
+
+# Admin assigns a caretaker to an elder
+@app.route('/api/admin/assign', methods=['POST'])
+@login_required
+def admin_assign():
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Forbidden'}), 403
+    data = request.get_json()
+    elder = User.query.get_or_404(data['elder_id'])
+    elder.caretaker_id = data['caretaker_id']
+    db.session.commit()
+    return jsonify({'status': 'assigned'})
 
 # ─────────────────────────────────────────────────────────────
 # CARETAKER API
@@ -481,7 +514,7 @@ if __name__ == '__main__':
         seed_db()
 
     # Start simulator in background thread
-    sim_thread = threading.Thread(target=simulate_sensor_data, daemon=True)
-    sim_thread.start()
+    #sim_thread = threading.Thread(target=simulate_sensor_data, daemon=True)
+    #sim_thread.start()
 
     socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False, allow_unsafe_werkzeug=True)
