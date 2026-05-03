@@ -7,6 +7,8 @@
   <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     body{background:#0a0f1e;font-family:'Syne',sans-serif;}
     .glass{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);backdrop-filter:blur(12px);}
@@ -135,19 +137,18 @@
         </div>
 
         <!-- Location -->
-        <div class="glass rounded-2xl p-5">
-          <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-3">Last Known Location</p>
-          <div class="flex items-center gap-4">
-            <div class="text-3xl">📍</div>
-            <div>
-              <p id="c-coords" class="font-mono text-sm text-slate-300">—</p>
-              <a id="c-map-link" href="#" target="_blank" class="text-xs font-mono text-sky-400 hover:underline mt-1 block hidden">Open in Google Maps →</a>
-            </div>
-          </div>
-        </div>
-
-      </div>
-
+      <div class="glass rounded-2xl p-5">
+        <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-3">Live Location</p>
+      <div class="flex items-center gap-3 mb-3">
+      <div class="text-2xl">📍</div>
+        <p id="c-coords" class="font-mono text-sm text-slate-300">—</p>
+          <a id="c-map-link" href="#" target="_blank"
+       class="ml-auto text-xs font-mono text-sky-400 border border-sky-500/30 px-3 py-1 rounded-xl hover:bg-sky-500/10 transition-colors hidden">
+      Open in Google Maps →
+    </a>
+  </div>
+  <div id="elder-map" style="height:280px;border-radius:12px;overflow:hidden;"></div>
+</div>
       <!-- Fall history -->
       <div class="glass rounded-2xl p-5">
         <p class="text-xs font-mono text-slate-500 uppercase tracking-widest mb-4">Recent Fall Events</p>
@@ -179,8 +180,40 @@
 
 <script>
 const socket = io();
-let selectedElderId = null;
-let currentFallId   = null;
+let elderMap    = null;
+let elderMarker = null;
+
+function initMap(lat, lng) {
+  if (elderMap) {
+    elderMap.remove();
+    elderMap = null;
+  }
+  elderMap = L.map('elder-map').setView([lat, lng], 16);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap'
+  }).addTo(elderMap);
+
+  const icon = L.divIcon({
+    html: '<div style="font-size:28px;">👴</div>',
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+    className: ''
+  });
+
+  elderMarker = L.marker([lat, lng], { icon }).addTo(elderMap)
+    .bindPopup('<b>Elder Location</b><br>Live tracking')
+    .openPopup();
+}
+
+function updateMap(lat, lng, name) {
+  if (!elderMap) {
+    initMap(lat, lng);
+    return;
+  }
+  elderMarker.setLatLng([lat, lng]);
+  elderMap.setView([lat, lng], 16);
+  elderMarker.bindPopup('<b>' + name + '</b><br>Live tracking').openPopup();
+}
 
 // Pass elder IDs from Jinja into JS cleanly as a JSON array
 const ELDER_IDS = {{ elders | map(attribute='id') | list | tojson }};
@@ -213,7 +246,8 @@ const chart = new Chart(ctx, {
 });
 
 // Select elder from sidebar
-function selectElder(id, name) {
+
+  function selectElder(id, name) {
   selectedElderId = id;
   document.getElementById('select-prompt').classList.add('hidden');
   document.getElementById('elder-panel').classList.remove('hidden');
@@ -234,6 +268,12 @@ function selectElder(id, name) {
         labels.push('');    labels.shift();
       });
       chart.update('none');
+
+      // Initialize map with last known location
+      const last = logs[logs.length - 1];
+      if (last && last.lat && last.lng) {
+        initMap(+last.lat, +last.lng);
+      }
     });
 }
 
@@ -252,11 +292,12 @@ function handleSensorUpdate(d) {
   document.getElementById('c-mag').textContent     = (+d.accel_mag).toFixed(2);
 
   if (d.lat && d.lng) {
-    document.getElementById('c-coords').textContent = (+d.lat).toFixed(5) + ', ' + (+d.lng).toFixed(5);
-    const ml = document.getElementById('c-map-link');
-    ml.href = 'https://maps.google.com/?q=' + d.lat + ',' + d.lng;
-    ml.classList.remove('hidden');
-  }
+  document.getElementById('c-coords').textContent = (+d.lat).toFixed(5) + ', ' + (+d.lng).toFixed(5);
+  const ml = document.getElementById('c-map-link');
+  ml.href = 'https://maps.google.com/?q=' + d.lat + ',' + d.lng;
+  ml.classList.remove('hidden');
+  updateMap(+d.lat, +d.lng, 'Elder');
+}
 
   axData.push(+d.ax); axData.shift();
   ayData.push(+d.ay); ayData.shift();

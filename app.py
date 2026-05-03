@@ -8,6 +8,51 @@ import random
 import math
 import threading
 import time
+# ml model imports below 
+import numpy as np
+import joblib
+import tensorflow as tf
+
+# ─────────────────────────────────────────────────────────────
+# ML MODEL SETUP
+# ─────────────────────────────────────────────────────────────
+
+scaler = joblib.load('scaler.pkl')
+
+interpreter = tf.lite.Interpreter(model_path='fall_model.tflite')
+interpreter.allocate_tensors()
+input_details  = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# Buffer to collect 256 timesteps per device before running prediction
+sensor_buffers = {}  # device_id -> list of [ax,ay,az,gx,gy,gz] readings
+last_fall_time = {}  # device_id -> timestamp of last fall detection
+FALL_COOLDOWN_SECONDS = 10
+
+def run_fall_prediction(device_id):
+    buf = sensor_buffers.get(device_id, [])
+    if len(buf) < 50:
+        return False, 0.0
+
+    # Always feed 256 timesteps — pad with zeros if buffer not full yet
+    if len(buf) >= 256:
+        window = np.array(buf[-256:], dtype=np.float32)
+    else:
+        window = np.array(buf, dtype=np.float32)
+        pad = np.zeros((256 - len(window), 6), dtype=np.float32)
+        window = np.vstack([pad, window])
+
+    window_scaled = scaler.transform(window).reshape(1, 256, 6)
+
+    interpreter.set_tensor(input_details[0]['index'], window_scaled)
+    interpreter.invoke()
+    output = interpreter.get_tensor(output_details[0]['index'])[0]
+
+    predicted_class = int(np.argmax(output))
+    confidence = float(np.max(output)) * 100
+
+    fall_detected = predicted_class in (1, 2)
+    return fall_detected, confidence
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'guardiansense-secret-key-change-in-prod'
@@ -19,7 +64,50 @@ bcrypt  = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=False, engineio_logger=False)
+# ─────────────────────────────────────────────────────────────
+# TWILIO SMS + CALL SETUP
+# ─────────────────────────────────────────────────────────────
+from twilio.rest import Client as TwilioClient
 
+TWILIO_SID   = 'AC323c02ebe52a9d74356caf2850af5e14'
+TWILIO_TOKEN = 'febfb6b3c258686fe932ef1981a49160'
+TWILIO_FROM  = '+19894743968'  # your Twilio number
+
+twilio_client = TwilioClient(TWILIO_SID, TWILIO_TOKEN)
+
+def send_fall_sms(to_number, elder_name, confidence, lat, lng):
+    if not to_number:
+        return
+    try:
+        maps_link = f"https://maps.google.com/?q={lat},{lng}" if lat and lng else "Location unavailable"
+        body = (
+            f"🚨 FALL ALERT — GuardianSense\n"
+            f"Elder: {elder_name}\n"
+            f"Confidence: {confidence:.1f}%\n"
+            f"Location: {maps_link}\n"
+            f"Please respond immediately."
+        )
+        twilio_client.messages.create(
+            body=body,
+            from_=TWILIO_FROM,
+            to=to_number
+        )
+        print(f"SMS sent to {to_number}")
+    except Exception as e:
+        print(f"SMS failed: {e}")
+
+def send_fall_call(to_number, elder_name):
+    if not to_number:
+        return
+    try:
+        twilio_client.calls.create(
+            twiml=f'<Response><Say voice="alice">Emergency alert. {elder_name} has fallen. Please respond immediately.</Say><Pause length="1"/><Say voice="alice">This is an automated alert from Guardian Sense.</Say></Response>',
+            from_=TWILIO_FROM,
+            to=to_number
+        )
+        print(f"Call initiated to {to_number}")
+    except Exception as e:
+        print(f"Call failed: {e}")
 # ─────────────────────────────────────────────────────────────
 # MODELS
 # ─────────────────────────────────────────────────────────────
@@ -30,7 +118,8 @@ class User(UserMixin, db.Model):
     email        = db.Column(db.String(120), unique=True, nullable=False)
     password     = db.Column(db.String(200), nullable=False)
     role         = db.Column(db.String(20), nullable=False)   # admin | caretaker | elder
-    device_id    = db.Column(db.String(64), nullable=True)    # only for elders
+    device_id    = db.Column(db.String(64), nullable=True) # only for elders
+    phone        = db.Column(db.String(20), nullable=True)
     caretaker_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)  # elder → caretaker
     created_at   = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -307,30 +396,71 @@ def mark_notifications_read():
 # ─────────────────────────────────────────────────────────────
 # ESP32 INGEST ENDPOINT
 # ─────────────────────────────────────────────────────────────
-
 @app.route('/api/sensor-data', methods=['POST'])
 def receive_sensor_data():
-    data      = request.get_json()
+    data = request.get_json()
     device_id = data.get('device_id')
-    elder     = User.query.filter_by(device_id=device_id, role='elder').first()
+
+    elder = User.query.filter_by(device_id=device_id, role='elder').first()
     if not elder:
         return jsonify({'error': 'Unknown device'}), 404
 
-    accel_mag = math.sqrt(data.get('ax',0)**2 + data.get('ay',0)**2 + data.get('az',0)**2)
+    ax = data.get('ax', 0)
+    ay = data.get('ay', 0)
+    az = data.get('az', 0)
+    gx = data.get('gx', 0)
+    gy = data.get('gy', 0)
+    gz = data.get('gz', 0)
 
+    accel_mag = math.sqrt(ax**2 + ay**2 + az**2)
+
+    # Buffer
+    if device_id not in sensor_buffers:
+        sensor_buffers[device_id] = []
+
+    sensor_buffers[device_id].append([ax, ay, az, gx, gy, gz])
+
+    if len(sensor_buffers[device_id]) > 512:
+        sensor_buffers[device_id] = sensor_buffers[device_id][-256:]
+
+    # ✅ FIXED INDENTATION
+    fw_fall  = data.get('fw_fall', False)
+    gyro_mag = math.sqrt(gx**2 + gy**2 + gz**2)
+
+    # Method 1 — Firmware flag (fastest, fires from ESP32 directly)
+    if fw_fall:
+        fall_detected = True
+        confidence    = 78.0
+
+    # Method 2 — Rule based on Flask side (backup)
+    elif accel_mag > 25.0 and gyro_mag > 300.0:
+        fall_detected = True
+        confidence    = 75.0
+
+    # Method 3 — ML model (catches subtle falls firmware misses)
+    else:
+        fall_detected, confidence = run_fall_prediction(device_id)
+
+    # Cooldown — prevent repeated alerts within 10 seconds
+    if fall_detected:
+        now_time  = datetime.utcnow()
+        last_time = last_fall_time.get(device_id)
+        if last_time and (now_time - last_time).total_seconds() < FALL_COOLDOWN_SECONDS:
+            fall_detected = False
+        else:
+            last_fall_time[device_id] = now_time
+
+    # Save log
     log = SensorLog(
         elder_id=elder.id,
-        ax=data.get('ax'), ay=data.get('ay'), az=data.get('az'),
-        gx=data.get('gx'), gy=data.get('gy'), gz=data.get('gz'),
+        ax=ax, ay=ay, az=az,
+        gx=gx, gy=gy, gz=gz,
         accel_mag=accel_mag,
         lat=data.get('lat'), lng=data.get('lng'),
         gps_fixed=data.get('gps_fixed', False),
         battery=data.get('battery', 100)
     )
     db.session.add(log)
-
-    fall_detected = data.get('fall_event', False)
-    confidence    = data.get('confidence', 0)
 
     if fall_detected:
         fall = FallEvent(
@@ -341,38 +471,49 @@ def receive_sensor_data():
         db.session.add(fall)
         db.session.flush()
 
-        # Notify caretaker
         if elder.caretaker_id:
-            notif = Notification(
+            db.session.add(Notification(
                 user_id=elder.caretaker_id,
                 message=f"🚨 Fall detected for {elder.name}! Confidence: {confidence:.1f}%",
                 type='danger'
-            )
-            db.session.add(notif)
+            ))
+            # Send SMS and call to caretaker
+            caretaker = User.query.get(elder.caretaker_id)
+            if caretaker and caretaker.phone:
+                threading.Thread(
+                    target=send_fall_sms,
+                    args=(caretaker.phone, elder.name, confidence, data.get('lat'), data.get('lng')),
+                    daemon=True
+                ).start()
+                threading.Thread(
+                    target=send_fall_call,
+                    args=(caretaker.phone, elder.name),
+                    daemon=True
+                ).start()
 
-        # Notify elder
-        elder_notif = Notification(
+        db.session.add(Notification(
             user_id=elder.id,
-            message=f"⚠️ A fall event was detected and your caretaker has been alerted.",
+            message="⚠️ A fall event was detected and your caretaker has been alerted.",
             type='warning'
-        )
-        db.session.add(elder_notif)
+        ))
+
         db.session.commit()
 
         socketio.emit('fall_alert', {
-            'elder_id':   elder.id,
+            'elder_id': elder.id,
             'elder_name': elder.name,
-            'id':         fall.id,
+            'id': fall.id,
             'confidence': confidence,
-            'lat': data.get('lat'), 'lng': data.get('lng'),
-            'timestamp':  fall.timestamp.isoformat()
+            'lat': data.get('lat'),
+            'lng': data.get('lng'),
+            'timestamp': fall.timestamp.isoformat()
         })
     else:
         db.session.commit()
 
     socketio.emit(f'sensor_{elder.id}', {
-        'ax': data.get('ax'), 'ay': data.get('ay'), 'az': data.get('az'),
-        'gx': data.get('gx'), 'gy': data.get('gy'), 'gz': data.get('gz'),
+        'ax': ax, 'ay': ay, 'az': az,
+        'gx': gx, 'gy': gy, 'gz': gz,
         'accel_mag': accel_mag,
         'lat': data.get('lat'), 'lng': data.get('lng'),
         'gps_fixed': data.get('gps_fixed', False),
@@ -383,6 +524,82 @@ def receive_sensor_data():
     })
 
     return jsonify({'status': 'ok', 'fall_detected': fall_detected}), 200
+
+# @app.route('/api/sensor-data', methods=['POST'])
+# def receive_sensor_data():
+#     data      = request.get_json()
+#     device_id = data.get('device_id')
+#     elder     = User.query.filter_by(device_id=device_id, role='elder').first()
+#     if not elder:
+#         return jsonify({'error': 'Unknown device'}), 404
+
+#     accel_mag = math.sqrt(data.get('ax',0)**2 + data.get('ay',0)**2 + data.get('az',0)**2)
+
+#     log = SensorLog(
+#         elder_id=elder.id,
+#         ax=data.get('ax'), ay=data.get('ay'), az=data.get('az'),
+#         gx=data.get('gx'), gy=data.get('gy'), gz=data.get('gz'),
+#         accel_mag=accel_mag,
+#         lat=data.get('lat'), lng=data.get('lng'),
+#         gps_fixed=data.get('gps_fixed', False),
+#         battery=data.get('battery', 100)
+#     )
+#     db.session.add(log)
+
+#     fall_detected = data.get('fall_event', False)
+#     confidence    = data.get('confidence', 0)
+
+#     if fall_detected:
+#         fall = FallEvent(
+#             elder_id=elder.id,
+#             confidence=confidence,
+#             lat=data.get('lat'), lng=data.get('lng')
+#         )
+#         db.session.add(fall)
+#         db.session.flush()
+
+#         # Notify caretaker
+#         if elder.caretaker_id:
+#             notif = Notification(
+#                 user_id=elder.caretaker_id,
+#                 message=f"🚨 Fall detected for {elder.name}! Confidence: {confidence:.1f}%",
+#                 type='danger'
+#             )
+#             db.session.add(notif)
+
+#         # Notify elder
+#         elder_notif = Notification(
+#             user_id=elder.id,
+#             message=f"⚠️ A fall event was detected and your caretaker has been alerted.",
+#             type='warning'
+#         )
+#         db.session.add(elder_notif)
+#         db.session.commit()
+
+#         socketio.emit('fall_alert', {
+#             'elder_id':   elder.id,
+#             'elder_name': elder.name,
+#             'id':         fall.id,
+#             'confidence': confidence,
+#             'lat': data.get('lat'), 'lng': data.get('lng'),
+#             'timestamp':  fall.timestamp.isoformat()
+#         })
+#     else:
+#         db.session.commit()
+
+#     socketio.emit(f'sensor_{elder.id}', {
+#         'ax': data.get('ax'), 'ay': data.get('ay'), 'az': data.get('az'),
+#         'gx': data.get('gx'), 'gy': data.get('gy'), 'gz': data.get('gz'),
+#         'accel_mag': accel_mag,
+#         'lat': data.get('lat'), 'lng': data.get('lng'),
+#         'gps_fixed': data.get('gps_fixed', False),
+#         'battery': data.get('battery', 100),
+#         'fall_detected': fall_detected,
+#         'confidence': confidence,
+#         'timestamp': datetime.utcnow().isoformat()
+#     })
+
+#     return jsonify({'status': 'ok', 'fall_detected': fall_detected}), 200
 
 # ─────────────────────────────────────────────────────────────
 # RANDOM DATA SIMULATOR (dev only — remove in production)
