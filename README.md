@@ -1,4 +1,4 @@
-# elderly-fall-detection
+# Elderly-Fall-Detection
 # 🚨 IoT-Based Elderly Fall Detection System
 
 An intelligent **IoT and AI/ML-based fall detection system** designed to monitor elderly individuals and detect potential fall events in real time.
